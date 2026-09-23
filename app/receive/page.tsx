@@ -2,11 +2,11 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Mic, MicOff, CheckCircle2, AlertCircle, Loader2, ShieldCheck, Radio, RotateCw, Hash } from 'lucide-react';
+import { ArrowLeft, Mic, MicOff, CheckCircle2, AlertCircle, Loader2, ShieldCheck, Radio, Lock, Hash } from 'lucide-react';
 import { AnimatedWave } from '@/components/AnimatedWave';
 import { useAudioReceiver } from '@/hooks/useAudioReceiver';
 import { useAudioSender } from '@/hooks/useAudioSender';
-import { validatePayload, formatAckPayload, getReceiverCode, refreshReceiverCode } from '@/lib/crypto';
+import { validatePayload, formatAckPayload, getReceiverCode } from '@/lib/crypto';
 import { saveTransaction } from '@/lib/db';
 import { Transaction } from '@/lib/db';
 
@@ -29,11 +29,6 @@ export default function ReceivePage() {
   useEffect(() => {
     setMyReceiverCode(getReceiverCode());
   }, []);
-
-  const handleRefreshCode = () => {
-    const newCode = refreshReceiverCode();
-    setMyReceiverCode(newCode);
-  };
 
   const { sendPayload, isReady: isSenderReady } = useAudioSender();
 
@@ -180,10 +175,10 @@ export default function ReceivePage() {
         </div>
       </div>
 
-      {/* Your Receiver Code Card */}
+      {/* Permanent Receiver Code Card */}
       <div className="glass-card px-4 py-3 mb-4 flex items-center justify-between border-emerald-500/30 bg-emerald-500/10">
         <div>
-          <p className="text-[11px] text-white/50 uppercase tracking-wider font-semibold">Your Receiver Code</p>
+          <p className="text-[11px] text-white/50 uppercase tracking-wider font-semibold">Your Permanent Receiver Code</p>
           <div className="flex items-center gap-2 mt-0.5">
             <span className="font-mono text-2xl font-black text-emerald-400 tracking-wider">
               #{myReceiverCode}
@@ -193,15 +188,10 @@ export default function ReceivePage() {
             </span>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={handleRefreshCode}
-          title="Generate new 4-digit code"
-          className="p-2 rounded-xl bg-white/5 hover:bg-white/10 active:scale-95 text-white/60 hover:text-white transition-all flex items-center gap-1.5 text-xs"
-        >
-          <RotateCw size={13} />
-          Change
-        </button>
+        <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-white/5 border border-white/10 text-white/40 text-xs">
+          <Lock size={12} className="text-emerald-400" />
+          <span>Locked</span>
+        </div>
       </div>
 
       {/* Main microphone button */}

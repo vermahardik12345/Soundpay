@@ -26,26 +26,17 @@ export function getDeviceId(): string {
 }
 
 /**
- * Generates or retrieves a 4-digit numeric receiver pairing code (e.g. "4821").
- * Easily spoken aloud by a shopkeeper or friend.
+ * Generates or retrieves a permanent, immutable 4-digit receiver pairing code (e.g. "4821").
+ * Generated once per device and cannot be changed or forged by bystanders.
  */
 export function getReceiverCode(): string {
   if (typeof window === 'undefined') return '0000';
-  let code = localStorage.getItem('soundpay-receiver-code');
+  let code = localStorage.getItem('soundpay-permanent-receiver-code');
   if (!code || code.length !== 4) {
+    // Generate a permanent 4-digit numeric code
     code = Math.floor(1000 + Math.random() * 9000).toString();
-    localStorage.setItem('soundpay-receiver-code', code);
+    localStorage.setItem('soundpay-permanent-receiver-code', code);
   }
-  return code;
-}
-
-/**
- * Regenerates a new 4-digit receiver pairing code.
- */
-export function refreshReceiverCode(): string {
-  if (typeof window === 'undefined') return '0000';
-  const code = Math.floor(1000 + Math.random() * 9000).toString();
-  localStorage.setItem('soundpay-receiver-code', code);
   return code;
 }
 
