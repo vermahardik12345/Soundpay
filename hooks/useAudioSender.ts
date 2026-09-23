@@ -42,16 +42,11 @@ export function useAudioSender(): UseAudioSenderReturn {
           // Acquire or resume the AudioContext and the matching instance handle
           const { ctx, instance } = await getAudioSession(ggwave);
 
-          // Select protocol:
-          // Audible: GGWAVE_PROTOCOL_AUDIBLE_NORMAL (maximum echo immunity and over-the-air reliability)
-          // Inaudible: GGWAVE_PROTOCOL_ULTRASOUND_FAST (near-ultrasound)
-          const protocolId =
-            mode === 'audible'
-              ? ggwave.ProtocolId.GGWAVE_PROTOCOL_AUDIBLE_NORMAL
-              : ggwave.ProtocolId.GGWAVE_PROTOCOL_ULTRASOUND_FAST;
+          // Select protocol: Inaudible GGWAVE_PROTOCOL_ULTRASOUND_FAST (near-ultrasound ~17kHz-20kHz)
+          const protocolId = ggwave.ProtocolId.GGWAVE_PROTOCOL_ULTRASOUND_FAST;
 
           // Strong output amplitude ensures clear acoustic reception through phone cases and laptop mics
-          const txVolume = mode === 'audible' ? 70 : 65;
+          const txVolume = 75;
 
           // Encode text into raw audio waveform (Int8Array view of 32-bit floats)
           const waveformInt8: Int8Array = ggwave.encode(

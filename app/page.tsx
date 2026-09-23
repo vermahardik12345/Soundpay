@@ -104,7 +104,7 @@ export default function HomePage() {
           </div>
           <div className="text-center">
             <p className="font-bold text-white">Send</p>
-            <p className="text-xs text-white/40">Play sound tone</p>
+            <p className="text-xs text-white/40">Inaudible tone</p>
           </div>
         </Link>
 
@@ -126,7 +126,7 @@ export default function HomePage() {
       {/* How it works banner */}
       <div className="glass-card p-4 mb-8 flex items-center gap-4">
         <div className="flex items-center gap-1 flex-shrink-0">
-          <Volume2 size={20} className="text-indigo-400" />
+          <Zap size={20} className="text-indigo-400" />
           <div className="flex gap-0.5">
             {[3,5,4,6,3,5,4].map((h,i) => (
               <div key={i} className="w-0.5 bg-indigo-400/50 rounded-full" style={{height: h*4, animationDelay: `${i*0.1}s`}} />
@@ -136,7 +136,7 @@ export default function HomePage() {
         </div>
         <div>
           <p className="text-sm font-semibold text-white">How it works</p>
-          <p className="text-xs text-white/40">Sender plays encoded audio tones · Receiver&apos;s mic decodes them · No WiFi needed</p>
+          <p className="text-xs text-white/40">Sender transmits inaudible ultrasound · Receiver&apos;s mic decodes it · No WiFi needed</p>
         </div>
       </div>
 

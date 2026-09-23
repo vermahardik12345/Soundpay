@@ -4,12 +4,10 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import {
   ArrowLeft,
-  Volume2,
   Loader2,
   CheckCircle2,
   AlertCircle,
   Zap,
-  VolumeX,
   ShieldCheck,
   ShieldAlert,
   Radio,
@@ -18,7 +16,7 @@ import {
 } from 'lucide-react';
 import { Numpad } from '@/components/Numpad';
 import { AnimatedWave } from '@/components/AnimatedWave';
-import { useAudioSender, SoundMode } from '@/hooks/useAudioSender';
+import { useAudioSender } from '@/hooks/useAudioSender';
 import { useAudioReceiver } from '@/hooks/useAudioReceiver';
 import { hashPayload, getDeviceId, formatCompactPayload, parseAckPayload } from '@/lib/crypto';
 import { saveTransaction } from '@/lib/db';
@@ -39,7 +37,6 @@ export default function PayPage() {
   const [sendState, setSendState] = useState<SendState>('idle');
   const [errorMsg, setErrorMsg] = useState('');
   const [deviceId, setDeviceId] = useState('');
-  const [soundMode, setSoundMode] = useState<SoundMode>('audible');
   const [ackCountdown, setAckCountdown] = useState(6);
 
   const pendingTxRef = useRef<PendingPayment | null>(null);
@@ -168,8 +165,8 @@ export default function PayPage() {
         timestamp,
       };
 
-      // 2. Play payment acoustic tone
-      await sendPayload(acousticPayload, soundMode);
+      // 2. Play inaudible ultrasound tone
+      await sendPayload(acousticPayload, 'ultrasound');
 
       // 3. Immediately switch to listening for receiver's acoustic ACK confirmation
       setSendState('waiting_ack');
@@ -195,7 +192,7 @@ export default function PayPage() {
       setSendState('error');
       setErrorMsg(e instanceof Error ? e.message : 'Send failed');
     }
-  }, [amount, note, deviceId, isSenderReady, sendPayload, soundMode, startListening, stopListening]);
+  }, [amount, note, deviceId, isSenderReady, sendPayload, startListening, stopListening]);
 
   const amountNum = parseFloat(amount) || 0;
   const isValidAmount = amountNum > 0;
@@ -213,7 +210,7 @@ export default function PayPage() {
         </Link>
         <div>
           <h1 className="text-xl font-bold text-white">Send Payment</h1>
-          <p className="text-xs text-white/40">Two-way acoustic handshake · Zero risk</p>
+          <p className="text-xs text-white/40">Inaudible ultrasound handshake · Silent & safe</p>
         </div>
         <div className="ml-auto">
           {isSenderReady ? (
@@ -362,36 +359,6 @@ export default function PayPage() {
         </div>
       )}
 
-      {/* Sound Mode Switcher: Inaudible vs Audible */}
-      <div className="mb-6 p-1.5 rounded-2xl bg-white/5 border border-white/10 flex gap-1.5">
-        <button
-          type="button"
-          id="btn-mode-ultrasound"
-          onClick={() => setSoundMode('ultrasound')}
-          className={`flex-1 py-2 px-2.5 rounded-xl flex items-center justify-center gap-1.5 text-xs font-semibold transition-all ${
-            soundMode === 'ultrasound'
-              ? 'bg-indigo-500/30 text-indigo-300 border border-indigo-500/50 shadow'
-              : 'text-white/40 hover:text-white/70'
-          }`}
-        >
-          <VolumeX size={14} />
-          Inaudible (Near-Ultrasound)
-        </button>
-        <button
-          type="button"
-          id="btn-mode-audible"
-          onClick={() => setSoundMode('audible')}
-          className={`flex-1 py-2 px-2.5 rounded-xl flex items-center justify-center gap-1.5 text-xs font-semibold transition-all ${
-            soundMode === 'audible'
-              ? 'bg-purple-500/30 text-purple-300 border border-purple-500/50 shadow'
-              : 'text-white/40 hover:text-white/70'
-          }`}
-        >
-          <Volume2 size={14} />
-          Audible Chime
-        </button>
-      </div>
-
       {/* Note input */}
       <div className="mb-6">
         <input
@@ -432,7 +399,7 @@ export default function PayPage() {
         {sendState === 'sending' ? (
           <>
             <Loader2 size={22} className="animate-spin" />
-            {soundMode === 'ultrasound' ? 'Broadcasting inaudibly...' : 'Broadcasting sound...'}
+            Broadcasting inaudibly...
           </>
         ) : sendState === 'waiting_ack' ? (
           <>
@@ -446,15 +413,15 @@ export default function PayPage() {
           </>
         ) : (
           <>
-            {soundMode === 'ultrasound' ? <Zap size={22} /> : <Volume2 size={22} />}
-            {soundMode === 'ultrasound' ? 'Pay Inaudible ⚡' : 'Pay via Sound 🔊'}
+            <Zap size={22} />
+            Pay Inaudible Ultrasound ⚡
           </>
         )}
       </button>
 
       <p className="text-center text-xs text-white/30 mt-4 flex items-center justify-center gap-1.5">
         <ShieldCheck size={12} className="text-emerald-400" />
-        Safe offline escrow: Amount deducts ONLY when receiver confirms
+        100% silent near-ultrasound · Amount deducts ONLY when receiver confirms
       </p>
     </main>
   );

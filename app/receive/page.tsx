@@ -76,15 +76,15 @@ export default function ReceivePage() {
       console.error('Failed to save received transaction:', e);
     }
 
-    // Two-Way Handshake: Emit acoustic ACK back to payer so payer knows it's safe to deduct funds
+    // Two-Way Handshake: Emit inaudible ultrasound ACK back to payer so payer knows it's safe to deduct funds
     try {
       setAckStatus('sending');
       const ackPayload = formatAckPayload(parsed.s);
-      console.log('[ReceivePage] Emitting acoustic confirmation ACK:', ackPayload);
-      await sendPayload(ackPayload, 'audible');
+      console.log('[ReceivePage] Emitting inaudible ultrasound ACK:', ackPayload);
+      await sendPayload(ackPayload, 'ultrasound');
       setAckStatus('sent');
     } catch (ackErr) {
-      console.warn('[ReceivePage] Could not broadcast acoustic ACK:', ackErr);
+      console.warn('[ReceivePage] Could not broadcast ultrasound ACK:', ackErr);
       setAckStatus('idle');
     }
   }, [sendPayload]);
@@ -267,7 +267,7 @@ export default function ReceivePage() {
               <span className="text-white/40">Handshake</span>
               <span className={ackStatus === 'sent' ? "text-emerald-400 flex items-center gap-1 font-medium" : "text-indigo-400 flex items-center gap-1"}>
                 <Radio size={11} className={ackStatus === 'sending' ? 'animate-spin' : ''} />
-                {ackStatus === 'sent' ? 'Acoustic ACK Confirmed to Payer' : ackStatus === 'sending' ? 'Sending Audio ACK...' : 'Ready'}
+                {ackStatus === 'sent' ? 'Inaudible ACK Confirmed to Payer' : ackStatus === 'sending' ? 'Sending Ultrasound ACK...' : 'Ready'}
               </span>
             </div>
           </div>
