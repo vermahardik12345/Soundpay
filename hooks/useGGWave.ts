@@ -1,99 +1,124 @@
-/**
- * hooks/useGGWave.ts
- * Shared singleton hook to initialize the ggwave WASM module.
- * Must be called client-side only.
- *
- * ggwave.js and ggwave.wasm are served from /public/ggwave/
- * so they bypass webpack and are always available offline (cached by SW).
- */
-
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
 
-export type GGWaveProtocol =
-  | 'GGWAVE_PROTOCOL_AUDIBLE_NORMAL'
-  | 'GGWAVE_PROTOCOL_AUDIBLE_FAST'
-  | 'GGWAVE_PROTOCOL_AUDIBLE_FASTEST'
-  | 'GGWAVE_PROTOCOL_ULTRASOUND_NORMAL'
-  | 'GGWAVE_PROTOCOL_ULTRASOUND_FAST'
-  | 'GGWAVE_PROTOCOL_ULTRASOUND_FASTEST';
-
-export interface GGWaveInstance {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  encode: (payload: string, protocol: number, volume: number) => any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  decode: (samples: Float32Array) => any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  free: (instance: any) => void;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  [key: string]: any;
-}
-
-export interface GGWaveModule {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  [key: string]: any;
-}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type GGWaveModule = Record<string, any>;
+// The instance is a numeric handle returned by m.init()
+export type GGWaveInstanceHandle = number;
 
 interface UseGGWaveReturn {
   ggwave: GGWaveModule | null;
-  instance: GGWaveInstance | null;
+  instance: GGWaveInstanceHandle | null;
   isReady: boolean;
   error: string | null;
   sampleRate: number;
 }
 
-// Module-level singletons so init happens only once across the app
+// Module-level singletons so WASM init happens only once across the app
 let ggwaveModuleCache: GGWaveModule | null = null;
-let ggwaveInstanceCache: GGWaveInstance | null = null;
-let audioContextCache: AudioContext | null = null;
-const SAMPLE_RATE = 48000;
+let sharedAudioContext: AudioContext | null = null;
+const handlesBySampleRate = new Map<number, GGWaveInstanceHandle>();
+const DEFAULT_SAMPLE_RATE = 48000;
+
+/**
+ * Reinterprets raw bytes into the target TypedArray view.
+ * Essential for ggwave WASM which transfers Float32 audio as raw Int8Array memory buffers.
+ */
+export function convertTypedArray<T extends ArrayBufferView>(
+  src: ArrayBufferView,
+  type: new (buffer: ArrayBuffer) => T
+): T {
+  const buffer = new ArrayBuffer(src.byteLength);
+  new Uint8Array(buffer).set(new Uint8Array(src.buffer, src.byteOffset, src.byteLength));
+  return new type(buffer);
+}
+
+/**
+ * Retrieves or creates a running AudioContext and a matching ggwave instance.
+ * Automatically synchronizes ggwave's input/output sample rates with the hardware sample rate.
+ */
+export async function getAudioSession(
+  mod?: GGWaveModule | null
+): Promise<{ ctx: AudioContext; instance: GGWaveInstanceHandle }> {
+  const ggwave = mod || ggwaveModuleCache;
+  if (!ggwave) {
+    throw new Error('ggwave WASM module is not loaded yet.');
+  }
+
+  if (typeof window === 'undefined') {
+    throw new Error('Audio is only supported in the browser.');
+  }
+
+  // Create or retrieve AudioContext
+  if (!sharedAudioContext || sharedAudioContext.state === 'closed') {
+    const AudioCtx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    try {
+      sharedAudioContext = new AudioCtx({ sampleRate: DEFAULT_SAMPLE_RATE });
+    } catch {
+      sharedAudioContext = new AudioCtx();
+    }
+  }
+
+  // Resume suspended context (required after user gesture on iOS/Android)
+  if (sharedAudioContext.state === 'suspended') {
+    await sharedAudioContext.resume();
+  }
+
+  const rate = sharedAudioContext.sampleRate;
+  let handle = handlesBySampleRate.get(rate);
+  if (handle === undefined) {
+    const params = ggwave.getDefaultParameters();
+    params.sampleRateInp = rate;
+    params.sampleRateOut = rate;
+    const newHandle: GGWaveInstanceHandle = ggwave.init(params);
+    handlesBySampleRate.set(rate, newHandle);
+    handle = newHandle;
+  }
+
+  return { ctx: sharedAudioContext, instance: handle };
+}
 
 export function useGGWave(): UseGGWaveReturn {
   const [isReady, setIsReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [activeHandle, setActiveHandle] = useState<GGWaveInstanceHandle | null>(null);
   const initRef = useRef(false);
 
   useEffect(() => {
-    if (initRef.current || ggwaveInstanceCache) {
-      if (ggwaveInstanceCache) setIsReady(true);
+    if (ggwaveModuleCache !== null) {
+      const defaultH = handlesBySampleRate.get(DEFAULT_SAMPLE_RATE) ?? null;
+      setActiveHandle(defaultH);
+      setIsReady(true);
       return;
     }
+    if (initRef.current) return;
     initRef.current = true;
 
     async function init() {
       try {
-        // Dynamically load the ggwave script from public folder
-        if (!ggwaveModuleCache) {
-          await loadScript('/ggwave/ggwave.js');
+        await loadScript('/ggwave/ggwave.js');
 
-          // The script sets window.ggwave_factory
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const factory = (window as any).ggwave_factory;
-          if (!factory) throw new Error('ggwave_factory not found on window');
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const factory = (window as any).ggwave_factory;
+        if (!factory) throw new Error('ggwave_factory not found in /ggwave/ggwave.js');
 
-          ggwaveModuleCache = await factory({
-            locateFile: (file: string) => `/ggwave/${file}`,
-          });
-        }
+        const mod: GGWaveModule = await factory();
+        ggwaveModuleCache = mod;
 
-        if (!ggwaveInstanceCache && ggwaveModuleCache) {
-          const mod = ggwaveModuleCache;
-          // Create AudioContext
-          if (!audioContextCache) {
-            audioContextCache = new AudioContext({ sampleRate: SAMPLE_RATE });
-          }
-
-          const params = mod.getDefaultParameters();
-          params.sampleRateInp = SAMPLE_RATE;
-          params.sampleRateOut = SAMPLE_RATE;
-
-          ggwaveInstanceCache = mod.init(params) as GGWaveInstance;
-        }
+        // Pre-initialize a default 48k instance
+        const params = mod.getDefaultParameters();
+        params.sampleRateInp = DEFAULT_SAMPLE_RATE;
+        params.sampleRateOut = DEFAULT_SAMPLE_RATE;
+        const defaultHandle = mod.init(params);
+        handlesBySampleRate.set(DEFAULT_SAMPLE_RATE, defaultHandle);
+        setActiveHandle(defaultHandle);
 
         setIsReady(true);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : 'Failed to load ggwave';
+        const msg = e instanceof Error ? e.message : 'Failed to load ggwave WASM';
         setError(msg);
         console.error('[useGGWave] init error:', e);
       }
@@ -104,16 +129,15 @@ export function useGGWave(): UseGGWaveReturn {
 
   return {
     ggwave: ggwaveModuleCache,
-    instance: ggwaveInstanceCache,
+    instance: activeHandle,
     isReady,
     error,
-    sampleRate: SAMPLE_RATE,
+    sampleRate: sharedAudioContext?.sampleRate || DEFAULT_SAMPLE_RATE,
   };
 }
 
 function loadScript(src: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    // Check if already loaded
     if (document.querySelector(`script[src="${src}"]`)) {
       resolve();
       return;
@@ -127,4 +151,5 @@ function loadScript(src: string): Promise<void> {
   });
 }
 
-export { audioContextCache as sharedAudioContext, SAMPLE_RATE };
+export { sharedAudioContext, DEFAULT_SAMPLE_RATE as SAMPLE_RATE };
+

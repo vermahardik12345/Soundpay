@@ -1,23 +1,9 @@
-/**
- * hooks/useAudioReceiver.ts
- * Captures microphone audio and decodes it using ggwave.
- *
- * Key settings for reliable decoding:
- *   - echoCancellation: false  (prevents DSP from distorting FSK tones)
- *   - noiseSuppression: false  (ggwave's Reed-Solomon handles noise)
- *   - autoGainControl: false   (prevents amplitude normalization)
- *
- * Uses ScriptProcessorNode for broad mobile browser compatibility.
- * Note: ScriptProcessorNode is deprecated but has the widest support.
- * AudioWorklet is the modern replacement but requires a separate worker file.
- */
-
 'use client';
 
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { useGGWave, sharedAudioContext, SAMPLE_RATE } from './useGGWave';
+import { useGGWave, convertTypedArray, getAudioSession } from './useGGWave';
 
-const BUFFER_SIZE = 4096; // Samples per processing chunk
+const BUFFER_SIZE = 1024; // Must match ggwave samplesPerFrame (default 1024)
 
 export interface DecodedPayload {
   raw: string;
@@ -32,40 +18,49 @@ interface UseAudioReceiverReturn {
   error: string | null;
   isReady: boolean;
   permissionDenied: boolean;
+  audioLevel: number; // 0 to 100 real-time input signal level
 }
 
 export function useAudioReceiver(
   onPayloadDecoded?: (payload: DecodedPayload) => void
 ): UseAudioReceiverReturn {
-  const { ggwave, instance, isReady, error: initError } = useGGWave();
+  const { ggwave, isReady, error: initError } = useGGWave();
   const [isListening, setIsListening] = useState(false);
   const [lastPayload, setLastPayload] = useState<DecodedPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [permissionDenied, setPermissionDenied] = useState(false);
+  const [audioLevel, setAudioLevel] = useState(0);
+
+  const callbackRef = useRef(onPayloadDecoded);
+  useEffect(() => {
+    callbackRef.current = onPayloadDecoded;
+  }, [onPayloadDecoded]);
 
   const streamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const muteGainRef = useRef<GainNode | null>(null);
 
   const stopListening = useCallback(() => {
-    // Stop all mic tracks
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
 
-    // Disconnect audio nodes
     try {
       processorRef.current?.disconnect();
       sourceNodeRef.current?.disconnect();
+      muteGainRef.current?.disconnect();
     } catch {}
     processorRef.current = null;
     sourceNodeRef.current = null;
+    muteGainRef.current = null;
 
+    setAudioLevel(0);
     setIsListening(false);
   }, []);
 
   const startListening = useCallback(async () => {
-    if (!isReady || !ggwave || !instance) {
-      setError('ggwave not ready yet');
+    if (!isReady || !ggwave) {
+      setError('Audio engine not ready yet.');
       return;
     }
     if (isListening) return;
@@ -74,85 +69,98 @@ export function useAudioReceiver(
     setPermissionDenied(false);
 
     try {
-      // Request mic with noise suppression OFF for clean FSK tones
+      // Obtain shared AudioContext & instance handle matching device sample rate
+      const { ctx, instance } = await getAudioSession(ggwave);
+
+      // Disable browser audio filtering so FSK tones are captured cleanly
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: false,
           noiseSuppression: false,
           autoGainControl: false,
-          sampleRate: SAMPLE_RATE,
-          channelCount: 1,
         },
       });
       streamRef.current = stream;
 
-      // Use shared AudioContext or create one
-      let ctx = sharedAudioContext;
-      if (!ctx) {
-        ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
-      }
-      if (ctx.state === 'suspended') {
-        await ctx.resume();
-      }
-
-      // Create source from microphone
       const sourceNode = ctx.createMediaStreamSource(stream);
       sourceNodeRef.current = sourceNode;
 
-      // ScriptProcessorNode for processing audio chunks
       // eslint-disable-next-line @typescript-eslint/no-deprecated
       const processor = ctx.createScriptProcessor(BUFFER_SIZE, 1, 1);
       processorRef.current = processor;
 
+      // Route through a gain of 0 to destination to prevent speaker feedback while keeping the audio graph active
+      const muteGain = ctx.createGain();
+      muteGain.gain.value = 0;
+      muteGainRef.current = muteGain;
+
       processor.onaudioprocess = (event) => {
-        if (!ggwave || !instance) return;
+        if (!ggwave || instance === null) return;
 
-        const inputData = event.inputBuffer.getChannelData(0);
+        const inputChannelData = event.inputBuffer.getChannelData(0);
 
-        // Convert Float32Array → Int8Array for ggwave.decode
-        const int8Samples = convertToInt8(inputData);
+        // Compute signal RMS for UI live volume indicator
+        let sum = 0;
+        for (let i = 0; i < inputChannelData.length; i++) {
+          sum += inputChannelData[i] * inputChannelData[i];
+        }
+        const rms = Math.sqrt(sum / inputChannelData.length);
+        const level = Math.min(100, Math.round(rms * 450));
+        setAudioLevel(level);
+
+        // Convert Float32Array to Int8Array view of raw float memory for ggwave WASM
+        const floatSamples = new Float32Array(inputChannelData);
+        const int8Input = convertTypedArray(floatSamples, Int8Array);
 
         try {
-          const result = ggwave.decode(instance, int8Samples);
+          const resultInt8: Int8Array = ggwave.decode(instance, int8Input);
 
-          if (result && result.length > 0) {
-            const decoded = new TextDecoder().decode(result);
-            if (decoded.trim().length > 0) {
+          if (resultInt8 && resultInt8.length > 0) {
+            const decoded = new TextDecoder('utf-8').decode(
+              new Uint8Array(resultInt8.buffer, resultInt8.byteOffset, resultInt8.byteLength)
+            );
+            const trimmed = decoded.trim().replace(/\0/g, '');
+            if (trimmed.length > 0) {
+              console.log('[SoundPay Audio Receiver] Decoded tone payload:', trimmed);
               const payload: DecodedPayload = {
-                raw: decoded.trim(),
+                raw: trimmed,
                 timestamp: Date.now(),
               };
               setLastPayload(payload);
-              onPayloadDecoded?.(payload);
+              callbackRef.current?.(payload);
             }
           }
         } catch {
-          // Decoding errors are normal (most frames have no payload)
+          // Silent during noise frames
         }
       };
 
-      // Connect: mic → processor → (silent destination to keep pipeline active)
+      // Connect: mic -> processor -> muteGain -> destination
       sourceNode.connect(processor);
-      processor.connect(ctx.destination);
+      processor.connect(muteGain);
+      muteGain.connect(ctx.destination);
 
       setIsListening(true);
     } catch (e) {
-      if (e instanceof DOMException && e.name === 'NotAllowedError') {
+      if (
+        e instanceof DOMException &&
+        (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError')
+      ) {
         setPermissionDenied(true);
-        setError('Microphone permission denied. Please allow mic access.');
+        setError('Microphone permission denied. Please allow access in browser settings.');
+      } else if (e instanceof DOMException && e.name === 'NotFoundError') {
+        setError('No microphone detected on this device.');
       } else {
         const msg = e instanceof Error ? e.message : 'Failed to start microphone';
         setError(msg);
       }
       console.error('[useAudioReceiver] error:', e);
     }
-  }, [ggwave, instance, isReady, isListening, onPayloadDecoded]);
+  }, [ggwave, isReady, isListening]);
 
   // Cleanup on unmount
   useEffect(() => {
-    return () => {
-      stopListening();
-    };
+    return () => stopListening();
   }, [stopListening]);
 
   return {
@@ -163,17 +171,7 @@ export function useAudioReceiver(
     error: error || initError,
     isReady,
     permissionDenied,
+    audioLevel,
   };
 }
 
-/**
- * Float32Array [-1, 1] → Int8Array [-128, 127] for ggwave.decode input
- */
-function convertToInt8(float32: Float32Array): Int8Array {
-  const int8 = new Int8Array(float32.length);
-  for (let i = 0; i < float32.length; i++) {
-    const clamped = Math.max(-1, Math.min(1, float32[i]));
-    int8[i] = Math.round(clamped * 127);
-  }
-  return int8;
-}

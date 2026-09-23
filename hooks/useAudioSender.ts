@@ -1,42 +1,29 @@
-/**
- * hooks/useAudioSender.ts
- * Encodes a JSON payload as audio tones and plays it via the device speaker.
- *
- * Protocol: GGWAVE_PROTOCOL_AUDIBLE_FAST (index 1)
- *   - Uses FSK tones in the 1-4kHz range
- *   - Reed-Solomon error correction for noise resilience
- *   - Works on ALL device speakers and microphones
- *   - Resistant to typical background noise (speech, music, ambient)
- */
-
 'use client';
 
 import { useState, useCallback, useRef } from 'react';
-import { useGGWave, sharedAudioContext, SAMPLE_RATE } from './useGGWave';
+import { useGGWave, convertTypedArray, getAudioSession } from './useGGWave';
 
-// Protocol IDs from ggwave (0=Audible Normal, 1=Audible Fast, 2=Audible Fastest)
-// We use AUDIBLE_FAST (1) — good balance of speed and reliability
-const PROTOCOL_ID = 1; // GGWAVE_PROTOCOL_AUDIBLE_FAST
-const TX_VOLUME = 20; // 0-100 scale, 20 is loud and clear
+export type SoundMode = 'ultrasound' | 'audible';
 
 interface UseAudioSenderReturn {
-  sendPayload: (payloadJson: string) => Promise<void>;
+  sendPayload: (payloadJson: string, mode?: SoundMode) => Promise<void>;
   isSending: boolean;
   error: string | null;
   isReady: boolean;
 }
 
 export function useAudioSender(): UseAudioSenderReturn {
-  const { ggwave, instance, isReady, error: initError } = useGGWave();
+  const { ggwave, isReady, error: initError } = useGGWave();
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const sourceRef = useRef<AudioBufferSourceNode | null>(null);
 
   const sendPayload = useCallback(
-    async (payloadJson: string) => {
-      if (!isReady || !ggwave || !instance) {
-        setError('ggwave not ready yet');
-        return;
+    async (payloadJson: string, mode: SoundMode = 'ultrasound'): Promise<void> => {
+      if (!isReady || !ggwave) {
+        const msg = 'Audio engine not ready yet. Please wait.';
+        setError(msg);
+        throw new Error(msg);
       }
 
       // Stop any ongoing transmission
@@ -50,50 +37,64 @@ export function useAudioSender(): UseAudioSenderReturn {
       setIsSending(true);
       setError(null);
 
-      try {
-        // Ensure AudioContext is running (may be suspended before user gesture)
-        let ctx = sharedAudioContext;
-        if (!ctx) {
-          ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
-        }
-        if (ctx.state === 'suspended') {
-          await ctx.resume();
-        }
+      return new Promise<void>(async (resolve, reject) => {
+        try {
+          // Acquire or resume the AudioContext and the matching instance handle
+          const { ctx, instance } = await getAudioSession(ggwave);
 
-        // Encode: returns Int8Array (waveform samples at SAMPLE_RATE)
-        const waveform = ggwave.encode(instance, payloadJson, PROTOCOL_ID, TX_VOLUME);
+          // Select protocol:
+          // Audible: GGWAVE_PROTOCOL_AUDIBLE_NORMAL (maximum echo immunity and over-the-air reliability)
+          // Inaudible: GGWAVE_PROTOCOL_ULTRASOUND_FAST (near-ultrasound)
+          const protocolId =
+            mode === 'audible'
+              ? ggwave.ProtocolId.GGWAVE_PROTOCOL_AUDIBLE_NORMAL
+              : ggwave.ProtocolId.GGWAVE_PROTOCOL_ULTRASOUND_FAST;
 
-        if (!waveform || waveform.length === 0) {
-          throw new Error('ggwave encoding returned empty buffer');
-        }
+          // Strong output amplitude ensures clear acoustic reception through phone cases and laptop mics
+          const txVolume = mode === 'audible' ? 70 : 65;
 
-        // Convert Int8Array to Float32Array for Web Audio API
-        const float32 = convertToFloat32(waveform);
+          // Encode text into raw audio waveform (Int8Array view of 32-bit floats)
+          const waveformInt8: Int8Array = ggwave.encode(
+            instance,
+            payloadJson,
+            protocolId,
+            txVolume
+          );
 
-        // Create AudioBuffer and fill it
-        const buffer = ctx.createBuffer(1, float32.length, SAMPLE_RATE);
-        buffer.getChannelData(0).set(float32);
+          if (!waveformInt8 || waveformInt8.length === 0) {
+            throw new Error('ggwave encode returned empty waveform. Payload may be too long.');
+          }
 
-        // Play it
-        const source = ctx.createBufferSource();
-        source.buffer = buffer;
-        source.connect(ctx.destination);
+          // Convert raw WASM Int8Array bytes to Float32Array
+          const float32Samples = convertTypedArray(waveformInt8, Float32Array);
 
-        sourceRef.current = source;
+          // Create Web Audio buffer matching the hardware sample rate
+          const buffer = ctx.createBuffer(1, float32Samples.length, ctx.sampleRate);
+          buffer.getChannelData(0).set(float32Samples);
 
-        source.start();
-        source.onended = () => {
+          const source = ctx.createBufferSource();
+          source.buffer = buffer;
+          source.connect(ctx.destination);
+          sourceRef.current = source;
+
+          source.onended = () => {
+            setIsSending(false);
+            sourceRef.current = null;
+            resolve();
+          };
+
+          source.start(0);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : 'Audio send failed';
+          setError(msg);
           setIsSending(false);
           sourceRef.current = null;
-        };
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : 'Audio send failed';
-        setError(msg);
-        setIsSending(false);
-        console.error('[useAudioSender] error:', e);
-      }
+          console.error('[useAudioSender] error:', e);
+          reject(e);
+        }
+      });
     },
-    [ggwave, instance, isReady]
+    [ggwave, isReady]
   );
 
   return {
@@ -104,18 +105,3 @@ export function useAudioSender(): UseAudioSenderReturn {
   };
 }
 
-/**
- * ggwave.encode() returns Int8Array. Web Audio API expects Float32Array in [-1, 1].
- * The samples are already normalized, just need type conversion.
- */
-function convertToFloat32(int8Array: Int8Array | Uint8Array | Float32Array): Float32Array {
-  // If it's already float, return as-is
-  if (int8Array instanceof Float32Array) return int8Array;
-
-  const float32 = new Float32Array(int8Array.length);
-  for (let i = 0; i < int8Array.length; i++) {
-    // Int8 range is -128 to 127; normalize to [-1, 1]
-    float32[i] = int8Array[i] / 32768.0;
-  }
-  return float32;
-}
