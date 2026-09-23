@@ -2,11 +2,11 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Mic, MicOff, CheckCircle2, AlertCircle, Loader2, ShieldCheck, Radio } from 'lucide-react';
+import { ArrowLeft, Mic, MicOff, CheckCircle2, AlertCircle, Loader2, ShieldCheck, Radio, RotateCw, Hash } from 'lucide-react';
 import { AnimatedWave } from '@/components/AnimatedWave';
 import { useAudioReceiver } from '@/hooks/useAudioReceiver';
 import { useAudioSender } from '@/hooks/useAudioSender';
-import { validatePayload, formatAckPayload } from '@/lib/crypto';
+import { validatePayload, formatAckPayload, getReceiverCode, refreshReceiverCode } from '@/lib/crypto';
 import { saveTransaction } from '@/lib/db';
 import { Transaction } from '@/lib/db';
 
@@ -23,7 +23,17 @@ export default function ReceivePage() {
   const [showFlash, setShowFlash] = useState(false);
   const [decodeError, setDecodeError] = useState<string | null>(null);
   const [ackStatus, setAckStatus] = useState<'idle' | 'sending' | 'sent'>('idle');
+  const [myReceiverCode, setMyReceiverCode] = useState('0000');
   const lastProcessedHashRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    setMyReceiverCode(getReceiverCode());
+  }, []);
+
+  const handleRefreshCode = () => {
+    const newCode = refreshReceiverCode();
+    setMyReceiverCode(newCode);
+  };
 
   const { sendPayload, isReady: isSenderReady } = useAudioSender();
 
@@ -31,7 +41,7 @@ export default function ReceivePage() {
     async (hash: string) => {
       try {
         setAckStatus('sending');
-        const ackPayload = formatAckPayload(hash);
+        const ackPayload = formatAckPayload(hash, myReceiverCode);
 
         // 1. Initial guard delay of 700ms so sender's phone speaker finishes trailing audio and switches on mic
         await new Promise((r) => setTimeout(r, 700));
@@ -51,7 +61,7 @@ export default function ReceivePage() {
         setAckStatus('idle');
       }
     },
-    [sendPayload]
+    [sendPayload, myReceiverCode]
   );
 
   const handleDecode = useCallback(
@@ -67,6 +77,13 @@ export default function ReceivePage() {
       if (!parsed) {
         setDecodeError('Received audio signal but payload format was invalid. Try again.');
         setTimeout(() => setDecodeError(null), 4000);
+        return;
+      }
+
+      // 🛡️ TARGET RECIPIENT PROTECTION:
+      // If sender addressed this payment to a specific 4-digit code, drop it if it doesn't match!
+      if (parsed.r && parsed.r !== 'ANY' && parsed.r !== myReceiverCode) {
+        console.log(`[ReceivePage] 🛡️ Ignored payment targeted to #${parsed.r} (my code is #${myReceiverCode})`);
         return;
       }
 
@@ -107,7 +124,7 @@ export default function ReceivePage() {
       // Two-Way Handshake: Emit inaudible ultrasound ACK back to payer so payer knows it's safe to deduct funds
       await sendAckBursts(parsed.s);
     },
-    [sendAckBursts]
+    [sendAckBursts, myReceiverCode]
   );
 
   const { startListening, stopListening, isListening, error, isReady, permissionDenied, audioLevel } =
@@ -161,6 +178,30 @@ export default function ReceivePage() {
             </span>
           )}
         </div>
+      </div>
+
+      {/* Your Receiver Code Card */}
+      <div className="glass-card px-4 py-3 mb-4 flex items-center justify-between border-emerald-500/30 bg-emerald-500/10">
+        <div>
+          <p className="text-[11px] text-white/50 uppercase tracking-wider font-semibold">Your Receiver Code</p>
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className="font-mono text-2xl font-black text-emerald-400 tracking-wider">
+              #{myReceiverCode}
+            </span>
+            <span className="text-[10px] text-emerald-300/70 bg-emerald-500/20 border border-emerald-400/20 px-2 py-0.5 rounded-full font-medium">
+              Tell payer this code
+            </span>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={handleRefreshCode}
+          title="Generate new 4-digit code"
+          className="p-2 rounded-xl bg-white/5 hover:bg-white/10 active:scale-95 text-white/60 hover:text-white transition-all flex items-center gap-1.5 text-xs"
+        >
+          <RotateCw size={13} />
+          Change
+        </button>
       </div>
 
       {/* Main microphone button */}
@@ -272,6 +313,10 @@ export default function ReceivePage() {
             <div className="flex items-center justify-between text-xs">
               <span className="text-white/40">From</span>
               <span className="text-white/70 font-mono">{receivedPayment.vendorId}</span>
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-white/40">Receiver Code</span>
+              <span className="text-emerald-400 font-mono font-bold">#{myReceiverCode}</span>
             </div>
             <div className="flex items-center justify-between text-xs">
               <span className="text-white/40">Hash</span>

@@ -26,6 +26,7 @@ type SendState = 'idle' | 'sending' | 'waiting_ack' | 'success' | 'timeout' | 'e
 interface PendingPayment {
   amountNum: number;
   deviceId: string;
+  targetCode?: string;
   note?: string;
   hash: string;
   timestamp: number;
@@ -33,8 +34,10 @@ interface PendingPayment {
 
 export default function PayPage() {
   const [amount, setAmount] = useState('0');
+  const [targetCode, setTargetCode] = useState('');
   const [note, setNote] = useState('');
   const [sendState, setSendState] = useState<SendState>('idle');
+  const [confirmedReceiver, setConfirmedReceiver] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
   const [deviceId, setDeviceId] = useState('');
   const [ackCountdown, setAckCountdown] = useState(6);
@@ -50,16 +53,20 @@ export default function PayPage() {
   const handleAckDecoded = useCallback(
     async ({ raw }: { raw: string }) => {
       console.log('[PayPage] Mic captured acoustic packet:', raw);
-      const confirmedHash = parseAckPayload(raw);
-      if (!confirmedHash) return;
+      const confirmed = parseAckPayload(raw);
+      if (!confirmed) return;
 
       const pending = pendingTxRef.current || lastSentTxRef.current;
       if (!pending) return;
 
+      const confirmedHash = confirmed.hash;
       const expectedShortHash = pending.hash.slice(0, 8);
       console.log('[PayPage] Checking ACK hash:', confirmedHash, 'vs expected:', expectedShortHash);
       if (confirmedHash === expectedShortHash) {
         console.log('[PayPage] Handshake Success! Matching acoustic ACK received:', confirmedHash);
+
+        // Store confirmed receiver code for success display
+        setConfirmedReceiver(confirmed.receiverCode || pending.targetCode || null);
 
         // Clear timers immediately
         if (ackTimeoutRef.current) clearTimeout(ackTimeoutRef.current);
@@ -92,6 +99,8 @@ export default function PayPage() {
           setSendState('idle');
           setAmount('0');
           setNote('');
+          setTargetCode('');
+          setConfirmedReceiver(null);
         }, 4000);
       }
     },
@@ -179,13 +188,15 @@ export default function PayPage() {
     try {
       // 1. Build payment payload and unique transaction hash
       const timestamp = Date.now();
-      const payloadBase = { v: deviceId, a: amountNum, t: timestamp, n: note || undefined };
+      const cleanTarget = targetCode.trim() ? targetCode.trim().toUpperCase() : undefined;
+      const payloadBase = { v: deviceId, a: amountNum, t: timestamp, r: cleanTarget, n: note || undefined };
       const hash = await hashPayload(payloadBase);
-      const acousticPayload = formatCompactPayload(amountNum, deviceId, timestamp, hash, note);
+      const acousticPayload = formatCompactPayload(amountNum, deviceId, timestamp, hash, cleanTarget, note);
 
       const txData: PendingPayment = {
         amountNum,
         deviceId,
+        targetCode: cleanTarget,
         note: note || undefined,
         hash,
         timestamp,
@@ -224,7 +235,7 @@ export default function PayPage() {
       setSendState('error');
       setErrorMsg(e instanceof Error ? e.message : 'Send failed');
     }
-  }, [amount, note, deviceId, isSenderReady, sendPayload, startListening, stopListening]);
+  }, [amount, targetCode, note, deviceId, isSenderReady, sendPayload, startListening, stopListening]);
 
   const amountNum = parseFloat(amount) || 0;
   const isValidAmount = amountNum > 0;
@@ -384,7 +395,7 @@ export default function PayPage() {
           <div>
             <p className="font-bold text-emerald-400">Payment Verified & Deducted!</p>
             <p className="text-xs text-emerald-300/80">
-              Receiver acknowledged receipt via acoustic handshake. ₹{amountNum.toFixed(2)} recorded in ledger.
+              {confirmedReceiver ? `Receiver #${confirmedReceiver}` : 'Receiver'} acknowledged receipt via acoustic handshake. ₹{amountNum.toFixed(2)} recorded in ledger.
             </p>
           </div>
         </div>
@@ -400,6 +411,37 @@ export default function PayPage() {
           </div>
         </div>
       )}
+
+      {/* Target Receiver Code Input */}
+      <div className="mb-4">
+        <div className="flex items-center justify-between mb-1.5 px-1">
+          <label htmlFor="input-target-code" className="text-xs font-semibold text-white/70">
+            Target Receiver Code (Optional)
+          </label>
+          <span className="text-[11px] font-mono font-semibold text-indigo-300">
+            {targetCode.trim() ? `#${targetCode.trim().toUpperCase()}` : 'Broadcast to ANY nearby'}
+          </span>
+        </div>
+        <div className="relative">
+          <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-white/40 font-mono font-bold text-sm">
+            #
+          </div>
+          <input
+            type="text"
+            id="input-target-code"
+            placeholder="e.g. 4821 (from receiver screen)"
+            value={targetCode}
+            onChange={(e) => setTargetCode(e.target.value.replace(/[^0-9a-zA-Z]/g, '').slice(0, 6).toUpperCase())}
+            maxLength={6}
+            className="w-full pl-8 pr-4 py-3 rounded-2xl bg-white/5 border border-white/10 text-white placeholder:text-white/30 focus:outline-none focus:border-indigo-500/50 text-sm font-mono tracking-wider transition-colors"
+          />
+        </div>
+        <p className="text-[11px] text-white/30 mt-1 px-1">
+          {targetCode.trim()
+            ? '🛡️ Only the device with code #' + targetCode.trim().toUpperCase() + ' can claim this payment.'
+            : '💡 Enter the 4-digit code shown on the receiver phone so other devices cannot claim it.'}
+        </p>
+      </div>
 
       {/* Note input */}
       <div className="mb-6">
