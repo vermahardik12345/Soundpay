@@ -27,67 +27,88 @@ export default function ReceivePage() {
 
   const { sendPayload, isReady: isSenderReady } = useAudioSender();
 
-  const handleDecode = useCallback(async ({ raw }: { raw: string; timestamp: number }) => {
-    // Ignore any ACK echo packets
-    if (raw.startsWith('ACK:')) {
-      return;
-    }
+  const sendAckBursts = useCallback(
+    async (hash: string) => {
+      try {
+        setAckStatus('sending');
+        const ackPayload = formatAckPayload(hash);
 
-    console.log('[ReceivePage] Received acoustic payload:', raw);
-    const parsed = validatePayload(raw);
-    console.log('[ReceivePage] Validated payload:', parsed);
-    if (!parsed) {
-      setDecodeError('Received audio signal but payload format was invalid. Try again.');
-      setTimeout(() => setDecodeError(null), 4000);
-      return;
-    }
+        // 1. Initial guard delay of 700ms so sender's phone speaker finishes trailing audio and switches on mic
+        await new Promise((r) => setTimeout(r, 700));
 
-    // Prevent duplicate saves of identical transaction hash within short interval
-    if (lastProcessedHashRef.current === parsed.s) {
-      console.log('[ReceivePage] Duplicate packet ignored for hash:', parsed.s);
-      return;
-    }
-    lastProcessedHashRef.current = parsed.s;
+        // 2. First burst
+        console.log('[ReceivePage] Emitting inaudible ultrasound ACK (burst 1):', ackPayload);
+        await sendPayload(ackPayload, 'ultrasound');
 
-    const received: ReceivedPayment = {
-      amount: parsed.a,
-      vendorId: parsed.v,
-      note: parsed.n,
-      hash: parsed.s,
-      timestamp: parsed.t,
-    };
+        // 3. Second burst after 400ms pause to ensure delivery over air gap
+        await new Promise((r) => setTimeout(r, 400));
+        console.log('[ReceivePage] Emitting inaudible ultrasound ACK (burst 2):', ackPayload);
+        await sendPayload(ackPayload, 'ultrasound');
 
-    setReceivedPayment(received);
-    setShowFlash(true);
-    setTimeout(() => setShowFlash(false), 500);
+        setAckStatus('sent');
+      } catch (ackErr) {
+        console.warn('[ReceivePage] Could not broadcast ultrasound ACK:', ackErr);
+        setAckStatus('idle');
+      }
+    },
+    [sendPayload]
+  );
 
-    // Save to IndexedDB
-    try {
-      await saveTransaction({
-        type: 'received',
+  const handleDecode = useCallback(
+    async ({ raw }: { raw: string; timestamp: number }) => {
+      // Ignore any ACK echo packets
+      if (raw.startsWith('ACK:')) {
+        return;
+      }
+
+      console.log('[ReceivePage] Received acoustic payload:', raw);
+      const parsed = validatePayload(raw);
+      console.log('[ReceivePage] Validated payload:', parsed);
+      if (!parsed) {
+        setDecodeError('Received audio signal but payload format was invalid. Try again.');
+        setTimeout(() => setDecodeError(null), 4000);
+        return;
+      }
+
+      // Prevent duplicate saves of identical transaction hash within short interval
+      if (lastProcessedHashRef.current === parsed.s) {
+        console.log('[ReceivePage] Duplicate packet ignored for hash:', parsed.s);
+        return;
+      }
+      lastProcessedHashRef.current = parsed.s;
+
+      const received: ReceivedPayment = {
         amount: parsed.a,
         vendorId: parsed.v,
         note: parsed.n,
         hash: parsed.s,
-        timestamp: Date.now(),
-        synced: 'pending',
-      } as Omit<Transaction, 'id'>);
-    } catch (e) {
-      console.error('Failed to save received transaction:', e);
-    }
+        timestamp: parsed.t,
+      };
 
-    // Two-Way Handshake: Emit inaudible ultrasound ACK back to payer so payer knows it's safe to deduct funds
-    try {
-      setAckStatus('sending');
-      const ackPayload = formatAckPayload(parsed.s);
-      console.log('[ReceivePage] Emitting inaudible ultrasound ACK:', ackPayload);
-      await sendPayload(ackPayload, 'ultrasound');
-      setAckStatus('sent');
-    } catch (ackErr) {
-      console.warn('[ReceivePage] Could not broadcast ultrasound ACK:', ackErr);
-      setAckStatus('idle');
-    }
-  }, [sendPayload]);
+      setReceivedPayment(received);
+      setShowFlash(true);
+      setTimeout(() => setShowFlash(false), 500);
+
+      // Save to IndexedDB
+      try {
+        await saveTransaction({
+          type: 'received',
+          amount: parsed.a,
+          vendorId: parsed.v,
+          note: parsed.n,
+          hash: parsed.s,
+          timestamp: Date.now(),
+          synced: 'pending',
+        } as Omit<Transaction, 'id'>);
+      } catch (e) {
+        console.error('Failed to save received transaction:', e);
+      }
+
+      // Two-Way Handshake: Emit inaudible ultrasound ACK back to payer so payer knows it's safe to deduct funds
+      await sendAckBursts(parsed.s);
+    },
+    [sendAckBursts]
+  );
 
   const { startListening, stopListening, isListening, error, isReady, permissionDenied, audioLevel } =
     useAudioReceiver(handleDecode);
@@ -272,13 +293,24 @@ export default function ReceivePage() {
             </div>
           </div>
 
-          <button
-            id="btn-receive-another"
-            onClick={() => setReceivedPayment(null)}
-            className="w-full mt-4 py-3 rounded-2xl bg-white/10 text-white text-sm font-medium hover:bg-white/15 active:scale-95 transition-all"
-          >
-            Receive Another
-          </button>
+          <div className="flex gap-2 mt-4">
+            <button
+              id="btn-resend-ack"
+              onClick={() => receivedPayment && sendAckBursts(receivedPayment.hash)}
+              disabled={ackStatus === 'sending'}
+              className="flex-1 py-3 rounded-2xl bg-indigo-500/20 border border-indigo-500/40 text-indigo-300 text-xs font-semibold hover:bg-indigo-500/30 active:scale-95 transition-all flex items-center justify-center gap-1.5"
+            >
+              <Radio size={14} className={ackStatus === 'sending' ? 'animate-spin' : ''} />
+              {ackStatus === 'sending' ? 'Sending Ultrasound...' : 'Resend ACK to Payer'}
+            </button>
+            <button
+              id="btn-receive-another"
+              onClick={() => setReceivedPayment(null)}
+              className="flex-1 py-3 rounded-2xl bg-white/10 text-white text-xs font-semibold hover:bg-white/15 active:scale-95 transition-all"
+            >
+              Receive Another
+            </button>
+          </div>
         </div>
       )}
 

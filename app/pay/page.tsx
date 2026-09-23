@@ -40,6 +40,7 @@ export default function PayPage() {
   const [ackCountdown, setAckCountdown] = useState(6);
 
   const pendingTxRef = useRef<PendingPayment | null>(null);
+  const lastSentTxRef = useRef<PendingPayment | null>(null);
   const ackTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -48,13 +49,15 @@ export default function PayPage() {
   // Listen for the receiver's acoustic ACK confirmation
   const handleAckDecoded = useCallback(
     async ({ raw }: { raw: string }) => {
+      console.log('[PayPage] Mic captured acoustic packet:', raw);
       const confirmedHash = parseAckPayload(raw);
       if (!confirmedHash) return;
 
-      const pending = pendingTxRef.current;
+      const pending = pendingTxRef.current || lastSentTxRef.current;
       if (!pending) return;
 
       const expectedShortHash = pending.hash.slice(0, 8);
+      console.log('[PayPage] Checking ACK hash:', confirmedHash, 'vs expected:', expectedShortHash);
       if (confirmedHash === expectedShortHash) {
         console.log('[PayPage] Handshake Success! Matching acoustic ACK received:', confirmedHash);
 
@@ -81,6 +84,7 @@ export default function PayPage() {
         }
 
         pendingTxRef.current = null;
+        lastSentTxRef.current = null;
         setSendState('success');
 
         // Reset to initial screen after 4 seconds
@@ -128,6 +132,29 @@ export default function PayPage() {
     setSendState('idle');
   }, [stopListening]);
 
+  // Re-listen for ACK without re-sending the audio tone (e.g. if receiver clicked "Resend ACK")
+  const handleReListen = useCallback(async () => {
+    if (!lastSentTxRef.current) return;
+    pendingTxRef.current = lastSentTxRef.current;
+    setSendState('waiting_ack');
+    setAckCountdown(8);
+    await startListening();
+
+    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+    countdownIntervalRef.current = setInterval(() => {
+      setAckCountdown((prev) => Math.max(0, prev - 1));
+    }, 1000);
+
+    if (ackTimeoutRef.current) clearTimeout(ackTimeoutRef.current);
+    ackTimeoutRef.current = setTimeout(() => {
+      if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+      stopListening();
+      console.warn('[PayPage] Handshake timeout on re-listen. 0 funds deducted.');
+      pendingTxRef.current = null;
+      setSendState('timeout');
+    }, 8500);
+  }, [startListening, stopListening]);
+
   const handleSend = useCallback(async () => {
     const amountNum = parseFloat(amount);
     if (!amountNum || amountNum <= 0) {
@@ -156,8 +183,7 @@ export default function PayPage() {
       const hash = await hashPayload(payloadBase);
       const acousticPayload = formatCompactPayload(amountNum, deviceId, timestamp, hash, note);
 
-      // Store in ref — DO NOT write to ledger yet!
-      pendingTxRef.current = {
+      const txData: PendingPayment = {
         amountNum,
         deviceId,
         note: note || undefined,
@@ -165,27 +191,33 @@ export default function PayPage() {
         timestamp,
       };
 
-      // 2. Play inaudible ultrasound tone
+      // Store in ref — DO NOT write to ledger yet!
+      pendingTxRef.current = txData;
+      lastSentTxRef.current = txData;
+
+      // 2. Pre-activate microphone NOW so audio hardware buffers are warm and recording!
+      await startListening();
+
+      // 3. Play inaudible ultrasound tone
       await sendPayload(acousticPayload, 'ultrasound');
 
-      // 3. Immediately switch to listening for receiver's acoustic ACK confirmation
+      // 4. Immediately switch to waiting state with generous 9-second window
       setSendState('waiting_ack');
-      setAckCountdown(6);
-      await startListening();
+      setAckCountdown(9);
 
       // Countdown ticker for the UI
       countdownIntervalRef.current = setInterval(() => {
         setAckCountdown((prev) => Math.max(0, prev - 1));
       }, 1000);
 
-      // Handshake safety timeout: if receiver doesn't reply in 6.5s, ABORT without deducting money
+      // Handshake safety timeout: 9.5s to allow for receiver's 700ms pre-delay + 2 bursts
       ackTimeoutRef.current = setTimeout(() => {
         if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
         stopListening();
         console.warn('[PayPage] Handshake timeout: Receiver did not respond. 0 funds deducted.');
         pendingTxRef.current = null;
         setSendState('timeout');
-      }, 6500);
+      }, 9500);
     } catch (e) {
       stopListening();
       pendingTxRef.current = null;
@@ -315,19 +347,29 @@ export default function PayPage() {
             </div>
           </div>
 
-          <div className="flex gap-2 mt-4">
-            <button
-              type="button"
-              onClick={handleSend}
-              className="flex-1 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold flex items-center justify-center gap-1.5 transition-all active:scale-95"
-            >
-              <RotateCcw size={13} />
-              Move Closer & Retry
-            </button>
+          <div className="flex flex-col gap-2 mt-4">
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleSend}
+                className="flex-1 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold flex items-center justify-center gap-1.5 transition-all active:scale-95"
+              >
+                <RotateCcw size={13} />
+                Re-send Ultrasound (₹{amountNum.toFixed(0)})
+              </button>
+              <button
+                type="button"
+                onClick={handleReListen}
+                className="flex-1 py-2.5 rounded-xl bg-sky-500/20 border border-sky-400/40 hover:bg-sky-500/30 text-sky-300 text-xs font-semibold flex items-center justify-center gap-1.5 transition-all active:scale-95"
+              >
+                <Radio size={13} />
+                Re-listen for Receipt
+              </button>
+            </div>
             <button
               type="button"
               onClick={() => setSendState('idle')}
-              className="px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-white/70 text-xs font-medium transition-all"
+              className="w-full py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white/60 text-xs font-medium transition-all"
             >
               Cancel
             </button>
