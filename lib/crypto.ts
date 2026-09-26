@@ -41,6 +41,33 @@ export function getReceiverCode(): string {
 }
 
 /**
+ * Encodes the receiver code into a QR format.
+ */
+export function formatReceiverQr(code: string): string {
+  return `SOUNDPAY:${code.trim().toUpperCase()}`;
+}
+
+/**
+ * Parses a scanned QR string and extracts the receiver code.
+ */
+export function parseReceiverQr(scanned: string): string | null {
+  if (!scanned || typeof scanned !== 'string') return null;
+  const s = scanned.trim();
+  if (s.startsWith('SOUNDPAY:')) {
+    return s.replace('SOUNDPAY:', '').trim().toUpperCase();
+  }
+  try {
+    const url = new URL(s);
+    const code = url.searchParams.get('code');
+    if (code) return code.trim().toUpperCase();
+  } catch {}
+  if (/^[0-9A-Za-z]{4,6}$/.test(s)) {
+    return s.toUpperCase();
+  }
+  return null;
+}
+
+/**
  * Formats a payment into a minimal acoustic payload with target receiver code.
  * Format: P:amount:shortSender:targetReceiver:sec:shortHash[:note]
  * Keeps payload ~25-30 chars for ultra-reliable, rapid near-ultrasound transmission.

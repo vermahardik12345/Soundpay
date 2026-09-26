@@ -2,10 +2,11 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Mic, MicOff, CheckCircle2, AlertCircle, Loader2, ShieldCheck, Lock, BookOpen } from 'lucide-react';
+import { ArrowLeft, Mic, MicOff, CheckCircle2, AlertCircle, Loader2, ShieldCheck, QrCode, BookOpen } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import { AnimatedWave } from '@/components/AnimatedWave';
 import { useAudioReceiver } from '@/hooks/useAudioReceiver';
-import { validatePayload, getReceiverCode } from '@/lib/crypto';
+import { validatePayload, getReceiverCode, formatReceiverQr } from '@/lib/crypto';
 import { saveTransaction, Transaction } from '@/lib/db';
 
 interface ReceivedPayment {
@@ -22,6 +23,7 @@ export default function ReceivePage() {
   const [decodeError, setDecodeError] = useState<string | null>(null);
   const [myReceiverCode, setMyReceiverCode] = useState('0000');
   const lastProcessedHashRef = useRef<string | null>(null);
+  const autoStartedRef = useRef(false);
 
   useEffect(() => {
     setMyReceiverCode(getReceiverCode());
@@ -29,10 +31,7 @@ export default function ReceivePage() {
 
   const handleDecode = useCallback(
     async ({ raw }: { raw: string; timestamp: number }) => {
-      // Ignore any ACK echo packets
-      if (raw.startsWith('ACK:')) {
-        return;
-      }
+      if (raw.startsWith('ACK:')) return;
 
       console.log('[ReceivePage] Received acoustic payload:', raw);
       const parsed = validatePayload(raw);
@@ -43,8 +42,7 @@ export default function ReceivePage() {
         return;
       }
 
-      // 🛡️ TARGET RECIPIENT PROTECTION:
-      // If sender addressed this payment to a specific 4-digit code, drop it if it doesn't match!
+      // Target Recipient Protection:
       if (parsed.r && parsed.r !== 'ANY' && parsed.r !== myReceiverCode) {
         console.log(`[ReceivePage] 🛡️ Ignored payment targeted to #${parsed.r} (my code is #${myReceiverCode})`);
         return;
@@ -69,7 +67,6 @@ export default function ReceivePage() {
       setShowFlash(true);
       setTimeout(() => setShowFlash(false), 500);
 
-      // Save to IndexedDB
       try {
         await saveTransaction({
           type: 'received',
@@ -90,6 +87,14 @@ export default function ReceivePage() {
   const { startListening, stopListening, isListening, error, isReady, permissionDenied, audioLevel } =
     useAudioReceiver(handleDecode);
 
+  // Auto-start listening as soon as audio engine is ready without manual tapping!
+  useEffect(() => {
+    if (isReady && !isListening && !permissionDenied && !autoStartedRef.current) {
+      autoStartedRef.current = true;
+      startListening();
+    }
+  }, [isReady, isListening, permissionDenied, startListening]);
+
   const toggleListening = useCallback(() => {
     if (isListening) {
       stopListening();
@@ -99,10 +104,12 @@ export default function ReceivePage() {
     }
   }, [isListening, startListening, stopListening]);
 
+  const qrPayload = formatReceiverQr(myReceiverCode);
+
   return (
     <main className="flex flex-col min-h-screen bg-gradient-primary px-4 pb-8 pt-12">
       {/* Header */}
-      <div className="flex items-center gap-3 mb-8">
+      <div className="flex items-center gap-3 mb-6">
         <Link
           href="/"
           id="btn-back-receive"
@@ -112,17 +119,17 @@ export default function ReceivePage() {
         </Link>
         <div>
           <h1 className="text-xl font-bold text-white">Receive Payment</h1>
-          <p className="text-xs text-white/40">Listening via microphone</p>
+          <p className="text-xs text-white/40">Scan QR to pair · Listening automatically</p>
         </div>
         <div className="ml-auto">
           {isReady ? (
-            <span className={`flex items-center gap-1 text-xs px-2 py-1 rounded-full border ${
+            <span className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border ${
               isListening
                 ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20'
                 : 'text-white/40 bg-white/5 border-white/10'
             }`}>
               <span className={`w-1.5 h-1.5 rounded-full ${isListening ? 'bg-emerald-400 animate-pulse' : 'bg-white/30'}`} />
-              {isListening ? 'Live' : 'Idle'}
+              {isListening ? 'Live Mic' : 'Idle'}
             </span>
           ) : (
             <span className="flex items-center gap-1 text-xs text-yellow-400 bg-yellow-500/10 px-2 py-1 rounded-full border border-yellow-500/20">
@@ -133,111 +140,91 @@ export default function ReceivePage() {
         </div>
       </div>
 
-      {/* Permanent Receiver Code Card */}
-      <div className="glass-card px-4 py-3 mb-4 flex items-center justify-between border-emerald-500/30 bg-emerald-500/10">
-        <div>
-          <p className="text-[11px] text-white/50 uppercase tracking-wider font-semibold">Your Receiver Code</p>
-          <div className="flex items-center gap-2 mt-0.5">
-            <span className="font-mono text-2xl font-black text-emerald-400 tracking-wider">
-              #{myReceiverCode}
-            </span>
-            <span className="text-[10px] text-emerald-300/70 bg-emerald-500/20 border border-emerald-400/20 px-2 py-0.5 rounded-full font-medium">
-              Share with payer
-            </span>
-          </div>
-        </div>
-        <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-white/5 border border-white/10 text-white/40 text-xs">
-          <Lock size={12} className="text-emerald-400" />
-          <span>Active</span>
-        </div>
-      </div>
-
-      {/* Main microphone button */}
-      <div className="flex flex-col items-center justify-center py-6 mb-4">
-        {/* Pulse rings */}
-        <div className="relative flex items-center justify-center">
-          {isListening && (
-            <>
-              <div className="absolute w-44 h-44 rounded-full bg-emerald-500/10 border border-emerald-500/15 animate-ping" style={{ animationDuration: '2s' }} />
-              <div className="absolute w-36 h-36 rounded-full bg-emerald-500/15 border border-emerald-500/20 animate-ping" style={{ animationDuration: '1.5s', animationDelay: '0.5s' }} />
-            </>
-          )}
-
-          <button
-            id="btn-toggle-listen"
-            onClick={toggleListening}
-            disabled={!isReady || permissionDenied}
-            className={`
-              relative w-28 h-28 rounded-full flex items-center justify-center
-              transition-all duration-300 active:scale-90
-              ${isListening
-                ? 'bg-gradient-to-br from-emerald-500 to-teal-600 neon-glow-emerald shadow-2xl'
-                : isReady && !permissionDenied
-                  ? 'bg-gradient-to-br from-indigo-600 to-purple-700 neon-glow-indigo hover:scale-105'
-                  : 'bg-white/10 cursor-not-allowed'
-              }
-            `}
-          >
-            {isListening ? (
-              <MicOff size={40} className="text-white" />
-            ) : (
-              <Mic size={40} className="text-white" />
-            )}
-          </button>
-        </div>
-
-        <p className="mt-6 text-center font-semibold text-white/70">
-          {!isReady && 'Loading audio engine...'}
-          {isReady && !isListening && !permissionDenied && 'Tap to start listening'}
-          {isListening && 'Listening for payment tones...'}
-          {permissionDenied && 'Microphone permission required'}
-        </p>
-        <p className="text-xs text-white/30 mt-1 text-center max-w-xs">
-          {isListening
-            ? 'Payer can send payment sound from across the room'
-            : 'Make sure to allow microphone access when prompted'
-          }
-        </p>
-
-        {/* Live Audio Level Meter */}
-        {isListening && (
-          <div className="mt-4 flex flex-col items-center gap-1.5 w-full max-w-xs">
-            <div className="flex items-center justify-between w-full text-[11px] text-white/50 px-1">
-              <span>Microphone Input</span>
-              <span className={audioLevel > 15 ? 'text-emerald-400 font-semibold' : 'text-white/40'}>
-                {audioLevel > 15 ? 'Signal Detected' : 'Listening...'} ({audioLevel}%)
-              </span>
+      {/* Main Content Area */}
+      {!receivedPayment ? (
+        <>
+          {/* Static QR Code Card */}
+          <div className="glass-card p-6 flex flex-col items-center justify-center text-center mb-5 relative overflow-hidden">
+            <div className="absolute top-0 right-0 w-32 h-32 rounded-full bg-emerald-500/10 blur-3xl pointer-events-none" />
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400 mb-4 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-full">
+              <QrCode size={13} />
+              <span>Static Receiver QR</span>
             </div>
-            <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden p-0.5 border border-white/10">
-              <div
-                className="h-full rounded-full transition-all duration-75 bg-gradient-to-r from-emerald-500 via-teal-400 to-indigo-400"
-                style={{ width: `${Math.max(5, audioLevel)}%` }}
+
+            {/* QR SVG */}
+            <div className="p-3.5 bg-white rounded-3xl shadow-2xl border-4 border-white/90 mb-3">
+              <QRCodeSVG
+                value={qrPayload}
+                size={185}
+                level="M"
+                includeMargin={false}
               />
             </div>
-          </div>
-        )}
-      </div>
 
-      {/* Audio wave */}
-      <div className="mb-6">
-        <AnimatedWave active={isListening} color={isListening ? '#10b981' : '#6366f1'} />
-      </div>
-
-      {/* Error states */}
-      {(error || decodeError) && !receivedPayment && (
-        <div className="glass-card p-4 mb-6 flex items-center gap-3 border-red-500/30 bg-red-500/10">
-          <AlertCircle size={22} className="text-red-400 flex-shrink-0" />
-          <div>
-            <p className="font-semibold text-red-400 text-sm">
-              {permissionDenied ? 'Microphone Blocked' : 'Error'}
+            <div className="flex items-center gap-2 mt-1">
+              <span className="font-mono text-xl font-black text-white tracking-widest">
+                #{myReceiverCode}
+              </span>
+            </div>
+            <p className="text-xs text-white/50 mt-1 max-w-[240px]">
+              Ask the payer to scan this QR code with their camera to send payment instantly.
             </p>
-            <p className="text-xs text-red-400/70">{error || decodeError}</p>
           </div>
-        </div>
-      )}
 
-      {/* Success card */}
-      {receivedPayment && (
+          {/* Automatic Listening Indicator & Control */}
+          <div className="glass-card p-4 mb-4 flex items-center justify-between border-emerald-500/20 bg-emerald-500/5">
+            <div className="flex items-center gap-3">
+              <div className={`w-10 h-10 rounded-2xl flex items-center justify-center ${isListening ? 'bg-emerald-500/20 text-emerald-400 animate-pulse' : 'bg-white/10 text-white/40'}`}>
+                <Mic size={20} />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-white">
+                  {isListening ? 'Microphone Active' : 'Microphone Paused'}
+                </p>
+                <p className="text-xs text-white/40">
+                  {isListening ? 'Auto-listening for soundwaves' : 'Tap button to resume'}
+                </p>
+              </div>
+            </div>
+
+            <button
+              id="btn-toggle-mic"
+              onClick={toggleListening}
+              className={`p-2.5 rounded-xl border text-xs font-medium transition-all ${
+                isListening
+                  ? 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
+                  : 'bg-emerald-500 text-black font-bold hover:bg-emerald-400'
+              }`}
+            >
+              {isListening ? <MicOff size={16} /> : <Mic size={16} />}
+            </button>
+          </div>
+
+          {/* Live Audio Level Meter */}
+          {isListening && (
+            <div className="glass-card p-3 mb-4">
+              <div className="flex items-center justify-between text-[11px] text-white/50 px-1 mb-1.5">
+                <span>Soundwave Detector</span>
+                <span className={audioLevel > 15 ? 'text-emerald-400 font-semibold' : 'text-white/40'}>
+                  {audioLevel > 15 ? 'Sound Detected' : 'Listening...'} ({audioLevel}%)
+                </span>
+              </div>
+              <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden p-0.5">
+                <div
+                  className="h-full rounded-full transition-all duration-75 bg-gradient-to-r from-emerald-500 via-teal-400 to-indigo-400"
+                  style={{ width: `${Math.max(5, audioLevel)}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Sound Wave Animation */}
+          <div className="mb-4">
+            <AnimatedWave active={isListening} color={isListening ? '#10b981' : '#6366f1'} />
+          </div>
+        </>
+      ) : (
+        /* Success Screen */
         <div className={`glass-card p-6 border-emerald-500/40 bg-emerald-500/10 ${showFlash ? 'success-flash' : ''}`}>
           <div className="flex items-center gap-3 mb-4">
             <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 flex items-center justify-center">
@@ -279,10 +266,13 @@ export default function ReceivePage() {
             </div>
           </div>
 
-          <div className="flex gap-2 mt-5">
+          <div className="flex gap-2 mt-6">
             <button
               id="btn-receive-another"
-              onClick={() => setReceivedPayment(null)}
+              onClick={() => {
+                setReceivedPayment(null);
+                startListening();
+              }}
               className="flex-1 py-3 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-semibold hover:bg-emerald-500/30 active:scale-95 transition-all"
             >
               Receive Another
@@ -299,21 +289,15 @@ export default function ReceivePage() {
         </div>
       )}
 
-      {/* Instructions if not listening */}
-      {!isListening && !receivedPayment && (
-        <div className="glass-card p-4 mt-2">
-          <p className="text-xs font-semibold text-white/60 mb-3 uppercase tracking-wider">Tips for Best Results</p>
-          <div className="space-y-2">
-            {[
-              'Keep sender phone volume at maximum',
-              'Near-ultrasound waves work across room distances',
-              'Avoid covering the mic or speaker with hands',
-            ].map((tip, i) => (
-              <div key={i} className="flex items-start gap-2 text-xs text-white/40">
-                <span className="text-indigo-400 font-bold mt-0.5">{i + 1}.</span>
-                <span>{tip}</span>
-              </div>
-            ))}
+      {/* Error states */}
+      {(error || decodeError) && !receivedPayment && (
+        <div className="glass-card p-4 mt-2 mb-4 flex items-center gap-3 border-red-500/30 bg-red-500/10">
+          <AlertCircle size={22} className="text-red-400 flex-shrink-0" />
+          <div>
+            <p className="font-semibold text-red-400 text-sm">
+              {permissionDenied ? 'Microphone Blocked' : 'Notice'}
+            </p>
+            <p className="text-xs text-red-400/70">{error || decodeError}</p>
           </div>
         </div>
       )}
