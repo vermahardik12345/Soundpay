@@ -39,6 +39,7 @@ export function useAudioReceiver(
   const streamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const preAmpGainRef = useRef<GainNode | null>(null);
   const muteGainRef = useRef<GainNode | null>(null);
 
   const stopListening = useCallback(() => {
@@ -46,10 +47,12 @@ export function useAudioReceiver(
     streamRef.current = null;
 
     try {
+      preAmpGainRef.current?.disconnect();
       processorRef.current?.disconnect();
       sourceNodeRef.current?.disconnect();
       muteGainRef.current?.disconnect();
     } catch {}
+    preAmpGainRef.current = null;
     processorRef.current = null;
     sourceNodeRef.current = null;
     muteGainRef.current = null;
@@ -135,8 +138,14 @@ export function useAudioReceiver(
         }
       };
 
-      // Connect: mic -> processor -> muteGain -> destination
-      sourceNode.connect(processor);
+      // Pre-amplifier gain to boost faint ultrasonic signals from across the room
+      const preAmpGain = ctx.createGain();
+      preAmpGain.gain.value = 1.4;
+      preAmpGainRef.current = preAmpGain;
+
+      // Connect: mic -> preAmpGain -> processor -> muteGain -> destination
+      sourceNode.connect(preAmpGain);
+      preAmpGain.connect(processor);
       processor.connect(muteGain);
       muteGain.connect(ctx.destination);
 

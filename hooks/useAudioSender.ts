@@ -46,7 +46,7 @@ export function useAudioSender(): UseAudioSenderReturn {
           const protocolId = ggwave.ProtocolId.GGWAVE_PROTOCOL_ULTRASOUND_FAST;
 
           // Strong output amplitude ensures clear acoustic reception through phone cases and laptop mics
-          const txVolume = 85;
+          const txVolume = 95;
 
           // Encode text into raw audio waveform (Int8Array view of 32-bit floats)
           const waveformInt8: Int8Array = ggwave.encode(

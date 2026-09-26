@@ -62,6 +62,13 @@ export async function getAllTransactions(): Promise<Transaction[]> {
   return (all as Transaction[]).reverse(); // newest first
 }
 
+export async function getBalance(): Promise<number> {
+  const txs = await getAllTransactions();
+  return txs.reduce((acc, t) => {
+    return t.type === 'received' ? acc + t.amount : acc - t.amount;
+  }, 1000); // Start with ₹1000 demo balance
+}
+
 export async function getPendingTransactions(): Promise<Transaction[]> {
   const db = await getDB();
   return db.getAllFromIndex('transactions', 'by-synced', 'pending') as Promise<Transaction[]>;

@@ -2,13 +2,11 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Mic, MicOff, CheckCircle2, AlertCircle, Loader2, ShieldCheck, Radio, Lock, Hash } from 'lucide-react';
+import { ArrowLeft, Mic, MicOff, CheckCircle2, AlertCircle, Loader2, ShieldCheck, Lock, BookOpen } from 'lucide-react';
 import { AnimatedWave } from '@/components/AnimatedWave';
 import { useAudioReceiver } from '@/hooks/useAudioReceiver';
-import { useAudioSender } from '@/hooks/useAudioSender';
-import { validatePayload, formatAckPayload, getReceiverCode } from '@/lib/crypto';
-import { saveTransaction } from '@/lib/db';
-import { Transaction } from '@/lib/db';
+import { validatePayload, getReceiverCode } from '@/lib/crypto';
+import { saveTransaction, Transaction } from '@/lib/db';
 
 interface ReceivedPayment {
   amount: number;
@@ -22,42 +20,12 @@ export default function ReceivePage() {
   const [receivedPayment, setReceivedPayment] = useState<ReceivedPayment | null>(null);
   const [showFlash, setShowFlash] = useState(false);
   const [decodeError, setDecodeError] = useState<string | null>(null);
-  const [ackStatus, setAckStatus] = useState<'idle' | 'sending' | 'sent'>('idle');
   const [myReceiverCode, setMyReceiverCode] = useState('0000');
   const lastProcessedHashRef = useRef<string | null>(null);
 
   useEffect(() => {
     setMyReceiverCode(getReceiverCode());
   }, []);
-
-  const { sendPayload, isReady: isSenderReady } = useAudioSender();
-
-  const sendAckBursts = useCallback(
-    async (hash: string) => {
-      try {
-        setAckStatus('sending');
-        const ackPayload = formatAckPayload(hash, myReceiverCode);
-
-        // 1. Initial guard delay of 700ms so sender's phone speaker finishes trailing audio and switches on mic
-        await new Promise((r) => setTimeout(r, 700));
-
-        // 2. First burst
-        console.log('[ReceivePage] Emitting inaudible ultrasound ACK (burst 1):', ackPayload);
-        await sendPayload(ackPayload, 'ultrasound');
-
-        // 3. Second burst after 400ms pause to ensure delivery over air gap
-        await new Promise((r) => setTimeout(r, 400));
-        console.log('[ReceivePage] Emitting inaudible ultrasound ACK (burst 2):', ackPayload);
-        await sendPayload(ackPayload, 'ultrasound');
-
-        setAckStatus('sent');
-      } catch (ackErr) {
-        console.warn('[ReceivePage] Could not broadcast ultrasound ACK:', ackErr);
-        setAckStatus('idle');
-      }
-    },
-    [sendPayload, myReceiverCode]
-  );
 
   const handleDecode = useCallback(
     async ({ raw }: { raw: string; timestamp: number }) => {
@@ -115,11 +83,8 @@ export default function ReceivePage() {
       } catch (e) {
         console.error('Failed to save received transaction:', e);
       }
-
-      // Two-Way Handshake: Emit inaudible ultrasound ACK back to payer so payer knows it's safe to deduct funds
-      await sendAckBursts(parsed.s);
     },
-    [sendAckBursts, myReceiverCode]
+    [myReceiverCode]
   );
 
   const { startListening, stopListening, isListening, error, isReady, permissionDenied, audioLevel } =
@@ -133,13 +98,6 @@ export default function ReceivePage() {
       startListening();
     }
   }, [isListening, startListening, stopListening]);
-
-  // Auto-start listening when ready
-  useEffect(() => {
-    if (isReady && !isListening) {
-      // Don't auto-start - wait for user gesture (required for iOS)
-    }
-  }, [isReady, isListening]);
 
   return (
     <main className="flex flex-col min-h-screen bg-gradient-primary px-4 pb-8 pt-12">
@@ -178,19 +136,19 @@ export default function ReceivePage() {
       {/* Permanent Receiver Code Card */}
       <div className="glass-card px-4 py-3 mb-4 flex items-center justify-between border-emerald-500/30 bg-emerald-500/10">
         <div>
-          <p className="text-[11px] text-white/50 uppercase tracking-wider font-semibold">Your Permanent Receiver Code</p>
+          <p className="text-[11px] text-white/50 uppercase tracking-wider font-semibold">Your Receiver Code</p>
           <div className="flex items-center gap-2 mt-0.5">
             <span className="font-mono text-2xl font-black text-emerald-400 tracking-wider">
               #{myReceiverCode}
             </span>
             <span className="text-[10px] text-emerald-300/70 bg-emerald-500/20 border border-emerald-400/20 px-2 py-0.5 rounded-full font-medium">
-              Tell payer this code
+              Share with payer
             </span>
           </div>
         </div>
         <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-white/5 border border-white/10 text-white/40 text-xs">
           <Lock size={12} className="text-emerald-400" />
-          <span>Locked</span>
+          <span>Active</span>
         </div>
       </div>
 
@@ -236,7 +194,7 @@ export default function ReceivePage() {
         </p>
         <p className="text-xs text-white/30 mt-1 text-center max-w-xs">
           {isListening
-            ? 'Hold sender phone 30–60cm away and tap "Send Sound"'
+            ? 'Payer can send payment sound from across the room'
             : 'Make sure to allow microphone access when prompted'
           }
         </p>
@@ -247,7 +205,7 @@ export default function ReceivePage() {
             <div className="flex items-center justify-between w-full text-[11px] text-white/50 px-1">
               <span>Microphone Input</span>
               <span className={audioLevel > 15 ? 'text-emerald-400 font-semibold' : 'text-white/40'}>
-                {audioLevel > 15 ? 'Signal Detected' : 'Quiet'} ({audioLevel}%)
+                {audioLevel > 15 ? 'Signal Detected' : 'Listening...'} ({audioLevel}%)
               </span>
             </div>
             <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden p-0.5 border border-white/10">
@@ -287,7 +245,7 @@ export default function ReceivePage() {
             </div>
             <div>
               <p className="font-bold text-emerald-400 text-lg">Payment Received!</p>
-              <p className="text-xs text-emerald-400/60">Saved to offline ledger</p>
+              <p className="text-xs text-emerald-400/60">Credited to offline balance</p>
             </div>
           </div>
 
@@ -313,38 +271,30 @@ export default function ReceivePage() {
               <span className="text-white/50 font-mono">{receivedPayment.hash}</span>
             </div>
             <div className="flex items-center justify-between text-xs">
-              <span className="text-white/40">Synced</span>
-              <span className="text-yellow-400 flex items-center gap-1">
-                <ShieldCheck size={11} />
-                Stored locally, pending sync
-              </span>
-            </div>
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-white/40">Handshake</span>
-              <span className={ackStatus === 'sent' ? "text-emerald-400 flex items-center gap-1 font-medium" : "text-indigo-400 flex items-center gap-1"}>
-                <Radio size={11} className={ackStatus === 'sending' ? 'animate-spin' : ''} />
-                {ackStatus === 'sent' ? 'Inaudible ACK Confirmed to Payer' : ackStatus === 'sending' ? 'Sending Ultrasound ACK...' : 'Ready'}
+              <span className="text-white/40">Status</span>
+              <span className="text-emerald-400 flex items-center gap-1 font-medium">
+                <ShieldCheck size={12} />
+                Saved to offline ledger
               </span>
             </div>
           </div>
 
-          <div className="flex gap-2 mt-4">
-            <button
-              id="btn-resend-ack"
-              onClick={() => receivedPayment && sendAckBursts(receivedPayment.hash)}
-              disabled={ackStatus === 'sending'}
-              className="flex-1 py-3 rounded-2xl bg-indigo-500/20 border border-indigo-500/40 text-indigo-300 text-xs font-semibold hover:bg-indigo-500/30 active:scale-95 transition-all flex items-center justify-center gap-1.5"
-            >
-              <Radio size={14} className={ackStatus === 'sending' ? 'animate-spin' : ''} />
-              {ackStatus === 'sending' ? 'Sending Ultrasound...' : 'Resend ACK to Payer'}
-            </button>
+          <div className="flex gap-2 mt-5">
             <button
               id="btn-receive-another"
               onClick={() => setReceivedPayment(null)}
-              className="flex-1 py-3 rounded-2xl bg-white/10 text-white text-xs font-semibold hover:bg-white/15 active:scale-95 transition-all"
+              className="flex-1 py-3 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-semibold hover:bg-emerald-500/30 active:scale-95 transition-all"
             >
               Receive Another
             </button>
+            <Link
+              href="/ledger"
+              id="btn-view-ledger"
+              className="flex-1 py-3 rounded-2xl bg-white/10 text-white text-xs font-semibold hover:bg-white/15 active:scale-95 transition-all flex items-center justify-center gap-1.5"
+            >
+              <BookOpen size={14} />
+              View Ledger
+            </Link>
           </div>
         </div>
       )}
@@ -355,10 +305,9 @@ export default function ReceivePage() {
           <p className="text-xs font-semibold text-white/60 mb-3 uppercase tracking-wider">Tips for Best Results</p>
           <div className="space-y-2">
             {[
-              'Hold phones 30–60cm (1–2 feet) apart',
-              'Quiet environment works better',
-              'Keep volume high on the sender\'s phone',
-              'Avoid covering the mic or speaker',
+              'Keep sender phone volume at maximum',
+              'Near-ultrasound waves work across room distances',
+              'Avoid covering the mic or speaker with hands',
             ].map((tip, i) => (
               <div key={i} className="flex items-start gap-2 text-xs text-white/40">
                 <span className="text-indigo-400 font-bold mt-0.5">{i + 1}.</span>
