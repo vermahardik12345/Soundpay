@@ -7,13 +7,16 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "cap:sync": "next build && cap sync",
-    "cap:open": "cap open android"
+    "cap": "node -e 'process.argv.splice(1, 0, \"cap\"); require(\"./node_modules/@capacitor/cli/dist/index\").run()'",
+    "cap:sync": "next build && npm run cap -- sync",
+    "cap:open": "npm run cap -- open android",
+    "cap:open:ios": "npm run cap -- open ios"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.2",
     "@capacitor/cli": "^8.5.2",
     "@capacitor/core": "^8.5.2",
+    "@capacitor/ios": "^8.5.2",
     "@ducanh2912/next-pwa": "^10.2.9",
     "ggwave": "^0.4.0",
     "html5-qrcode": "^2.3.8",
